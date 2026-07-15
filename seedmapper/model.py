@@ -57,7 +57,7 @@ class Project:
 
     name: str = "Untitled Map"
     seed: str = ""
-    mc_version: str = "1.21"
+    mc_version: str = "1.21.3"
     waypoints: list = field(default_factory=list)
 
     def add(self, wp: Waypoint) -> None:
@@ -85,7 +85,7 @@ class Project:
         proj = cls(
             name=data.get("name", "Untitled Map"),
             seed=str(data.get("seed", "")),
-            mc_version=str(data.get("mc_version", "1.21")),
+            mc_version=str(data.get("mc_version", "1.21.3")),
         )
         proj.waypoints = [Waypoint.from_dict(w) for w in data.get("waypoints", [])]
         return proj

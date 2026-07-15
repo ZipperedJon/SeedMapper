@@ -6,7 +6,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from . import __app_name__, __version__, biomes, exporters, msf
+from . import __app_name__, __version__, biomes, engine, exporters, msf
 from .mapcanvas import MapCanvas
 from .model import DIMENSIONS, Project, Waypoint
 
@@ -61,8 +61,7 @@ class WaypointDialog(tk.Toplevel):
 
         row += 1
         ttk.Label(frm, text="Colour").grid(row=row, column=0, sticky="w", **pad)
-        self._swatch = tk.Label(frm, width=4, background=self._color.get(),
-                                relief="sunken")
+        self._swatch = tk.Label(frm, width=4, background=self._color.get(), relief="sunken")
         self._swatch.grid(row=row, column=1, sticky="w", **pad)
         ttk.Button(frm, text="Pick colour...", command=self._pick_color).grid(
             row=row, column=2, columnspan=2, sticky="w", **pad)
@@ -85,7 +84,7 @@ class WaypointDialog(tk.Toplevel):
         self.wait_window(self)
 
     def _pick_color(self):
-        rgb, hexval = colorchooser.askcolor(color=self._color.get(), parent=self)
+        _, hexval = colorchooser.askcolor(color=self._color.get(), parent=self)
         if hexval:
             self._color.set(hexval)
             self._swatch.config(background=hexval)
@@ -102,14 +101,11 @@ class WaypointDialog(tk.Toplevel):
         try:
             y = int(float(y_raw)) if y_raw else None
         except ValueError:
-            messagebox.showerror("Invalid Y", "Y must be a whole number or blank.",
-                                 parent=self)
+            messagebox.showerror("Invalid Y", "Y must be a whole number or blank.", parent=self)
             return
 
         self._wp.name = self._name.get().strip() or "Waypoint"
-        self._wp.x = x
-        self._wp.z = z
-        self._wp.y = y
+        self._wp.x, self._wp.z, self._wp.y = x, z, y
         self._wp.dimension = self._dimension.get()
         self._wp.category = self._category.get().strip()
         self._wp.color = self._color.get()
@@ -125,12 +121,13 @@ class WaypointDialog(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("1100x720")
-        self.minsize(820, 520)
+        self.geometry("1180x760")
+        self.minsize(860, 560)
 
         self.project = Project()
         self.current_path: Path | None = None
         self.dirty = False
+        self._engine_available = engine.available()
 
         self._coord_var = tk.StringVar(value="X: -, Z: -")
         self._status_var = tk.StringVar(value="Ready")
@@ -138,15 +135,16 @@ class App(tk.Tk):
         self._version_var = tk.StringVar(value=self.project.mc_version)
         self._biome_var = tk.BooleanVar(value=False)
         self._add_var = tk.BooleanVar(value=False)
+        self._structures_var = tk.BooleanVar(value=False)
+        self._struct_enabled = {
+            s["key"]: tk.BooleanVar(value=s["on"]) for s in engine.STRUCTURES}
 
         self._build_menu()
         self._build_toolbar()
         self._build_body()
         self._build_statusbar()
 
-        self._biome_available = biomes.try_load_backend() is not None
-        self._refresh_biome_control()
-
+        self._refresh_engine_controls()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_all()
         self._update_title()
@@ -172,8 +170,17 @@ class App(tk.Tk):
         viewmenu = tk.Menu(menubar, tearoff=0)
         viewmenu.add_checkbutton(label="Show biome layer", variable=self._biome_var,
                                  command=self._toggle_biomes)
+        viewmenu.add_checkbutton(label="Show structures", variable=self._structures_var,
+                                 command=self._toggle_structures)
+        structmenu = tk.Menu(viewmenu, tearoff=0)
+        for s in engine.STRUCTURES:
+            structmenu.add_checkbutton(label=s["label"], variable=self._struct_enabled[s["key"]],
+                                       command=self._refresh_structures)
+        viewmenu.add_cascade(label="Structure types", menu=structmenu)
+        viewmenu.add_separator()
         viewmenu.add_command(label="Reset view (home)", accelerator="Ctrl+H",
                              command=lambda: self.map.go_home())
+        viewmenu.add_command(label="Go to spawn", command=self._goto_spawn)
         menubar.add_cascade(label="View", menu=viewmenu)
 
         helpmenu = tk.Menu(menubar, tearoff=0)
@@ -191,16 +198,17 @@ class App(tk.Tk):
         bar.pack(side="top", fill="x")
 
         ttk.Label(bar, text="Seed:").pack(side="left")
-        seed_entry = ttk.Entry(bar, textvariable=self._seed_var, width=22)
+        seed_entry = ttk.Entry(bar, textvariable=self._seed_var, width=20)
         seed_entry.pack(side="left", padx=(4, 12))
-        seed_entry.bind("<FocusOut>", lambda e: self._on_seed_version_change())
-        seed_entry.bind("<Return>", lambda e: self._on_seed_version_change())
+        seed_entry.bind("<FocusOut>", lambda e: self._apply_seed_version())
+        seed_entry.bind("<Return>", lambda e: self._apply_seed_version())
 
-        ttk.Label(bar, text="MC version:").pack(side="left")
-        ver_entry = ttk.Entry(bar, textvariable=self._version_var, width=8)
-        ver_entry.pack(side="left", padx=(4, 12))
-        ver_entry.bind("<FocusOut>", lambda e: self._on_seed_version_change())
-        ver_entry.bind("<Return>", lambda e: self._on_seed_version_change())
+        ttk.Label(bar, text="Version:").pack(side="left")
+        self._version_combo = ttk.Combobox(
+            bar, textvariable=self._version_var, values=engine.VERSION_LABELS,
+            width=15, state="readonly")
+        self._version_combo.pack(side="left", padx=(4, 12))
+        self._version_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_seed_version())
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
 
@@ -208,35 +216,33 @@ class App(tk.Tk):
             bar, text="Add waypoint (click map)", variable=self._add_var,
             style="Toolbutton", command=self._toggle_add_mode)
         self._add_btn.pack(side="left", padx=4)
-
         self._biome_chk = ttk.Checkbutton(
             bar, text="Biome layer", variable=self._biome_var,
             style="Toolbutton", command=self._toggle_biomes)
         self._biome_chk.pack(side="left", padx=4)
+        self._struct_chk = ttk.Checkbutton(
+            bar, text="Structures", variable=self._structures_var,
+            style="Toolbutton", command=self._toggle_structures)
+        self._struct_chk.pack(side="left", padx=4)
 
+        ttk.Button(bar, text="Spawn", command=self._goto_spawn).pack(side="left", padx=4)
         ttk.Button(bar, text="Home", command=lambda: self.map.go_home()).pack(side="left", padx=4)
 
     def _build_body(self):
         paned = ttk.PanedWindow(self, orient="horizontal")
         paned.pack(side="top", fill="both", expand=True)
 
-        # Left: waypoint list + buttons.
         left = ttk.Frame(paned, padding=(6, 6))
         paned.add(left, weight=0)
 
         ttk.Label(left, text="Waypoints", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-
         cols = ("name", "x", "z", "dim")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=20,
+        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=14,
                                  selectmode="browse")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("x", text="X")
-        self.tree.heading("z", text="Z")
-        self.tree.heading("dim", text="Dim")
-        self.tree.column("name", width=140)
-        self.tree.column("x", width=56, anchor="e")
-        self.tree.column("z", width=56, anchor="e")
-        self.tree.column("dim", width=70)
+        for c, t, w, anc in (("name", "Name", 130, "w"), ("x", "X", 54, "e"),
+                             ("z", "Z", 54, "e"), ("dim", "Dim", 66, "w")):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor=anc)
         self.tree.pack(fill="both", expand=True, pady=(4, 6))
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", lambda e: self._edit_selected())
@@ -248,68 +254,130 @@ class App(tk.Tk):
         ttk.Button(btns, text="Delete", command=self._delete_selected).pack(side="left", expand=True, fill="x", padx=2)
         ttk.Button(left, text="Go to on map", command=self._goto_selected).pack(fill="x", pady=(6, 0))
 
-        # Right: the map.
+        self._build_legend(left)
+
         self.map = MapCanvas(paned)
         paned.add(self.map, weight=1)
         self.map.on_coords = self._on_map_coords
         self.map.on_place = self._on_map_place
         self.map.on_select = self._on_map_select
         self.map.on_edit = self._on_map_edit
+        self.map.on_view_changed = self._on_view_changed
+        self.map.on_hover = self._on_hover
+
+    def _build_legend(self, parent):
+        lf = ttk.LabelFrame(parent, text="Structure icons", padding=(6, 4))
+        lf.pack(fill="x", pady=(10, 0))
+        for s in engine.STRUCTURES:
+            row = ttk.Frame(lf)
+            row.pack(fill="x", pady=1)
+            swatch = tk.Label(row, text=s["sym"], background=s["color"],
+                              foreground="#10181f", width=2,
+                              font=("Segoe UI", 8, "bold"))
+            swatch.pack(side="left", padx=(0, 6))
+            ttk.Label(row, text=s["label"], font=("Segoe UI", 8)).pack(side="left")
 
     def _build_statusbar(self):
         bar = ttk.Frame(self, relief="sunken")
         bar.pack(side="bottom", fill="x")
-        ttk.Label(bar, textvariable=self._coord_var, anchor="w", width=24).pack(side="left", padx=8)
+        ttk.Label(bar, textvariable=self._coord_var, anchor="w", width=22).pack(side="left", padx=8)
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", pady=2)
         ttk.Label(bar, textvariable=self._status_var, anchor="w").pack(side="left", padx=8)
 
     # ------------------------------------------------------------------ #
-    # Biome control
+    # Engine-dependent controls
     # ------------------------------------------------------------------ #
-    def _refresh_biome_control(self):
-        state = "normal" if self._biome_available else "disabled"
+    def _refresh_engine_controls(self):
+        state = "normal" if self._engine_available else "disabled"
         self._biome_chk.config(state=state)
-        if not self._biome_available:
+        self._struct_chk.config(state=state)
+        if not self._engine_available:
             self._biome_var.set(False)
+            self._structures_var.set(False)
             self._status_var.set(
-                "Biome layer unavailable (no world-gen backend installed). "
-                "Grid + waypoints only.")
+                "World-gen engine unavailable - running as grid + waypoint mapper. "
+                f"({engine.load_error()})")
 
     def _toggle_biomes(self):
-        if not self._biome_available:
+        if not self._engine_available:
             self._biome_var.set(False)
             return
-        enabled = self._biome_var.get()
-        if enabled:
+        if self._biome_var.get():
             provider = biomes.get_provider(self.project.seed, self.project.mc_version)
             self.map.set_biome_provider(provider)
-        self.map.set_biome_enabled(enabled)
+        self.map.set_biome_enabled(self._biome_var.get())
 
-    # ------------------------------------------------------------------ #
-    # Toolbar actions
-    # ------------------------------------------------------------------ #
+    def _toggle_structures(self):
+        if not self._engine_available:
+            self._structures_var.set(False)
+            return
+        self._refresh_structures()
+
     def _toggle_add_mode(self):
         self.map.set_add_mode(self._add_var.get())
-        if self._add_var.get():
-            self._status_var.set("Add mode: click on the map to drop a waypoint.")
-        else:
-            self._status_var.set("Ready")
+        self._status_var.set("Add mode: click the map to drop a waypoint."
+                             if self._add_var.get() else "Ready")
 
-    def _on_seed_version_change(self):
+    def _apply_seed_version(self):
         seed = self._seed_var.get().strip()
-        version = self._version_var.get().strip() or "1.21"
-        if seed != self.project.seed or version != self.project.mc_version:
-            self.project.seed = seed
-            self.project.mc_version = version
-            self._mark_dirty()
-            if self._biome_var.get():
-                self._toggle_biomes()
+        version = engine.normalize_version(self._version_var.get())
+        self._version_var.set(version)
+        changed = (seed != self.project.seed or version != self.project.mc_version)
+        if not changed:
+            return
+        self.project.seed = seed
+        self.project.mc_version = version
+        self._mark_dirty()
+        if self._biome_var.get():
+            self.map.set_biome_provider(
+                biomes.get_provider(self.project.seed, self.project.mc_version))
+            self.map.set_biome_enabled(True)
+        self._refresh_structures()
+
+    def _on_view_changed(self):
+        self._refresh_structures()
+
+    def _refresh_structures(self):
+        if not (self._engine_available and self._structures_var.get()):
+            self.map.set_structures([])
+            return
+        x0, z0, x1, z1 = self.map.view_bounds()
+        markers, too_broad = [], False
+        for sdef in engine.STRUCTURES:
+            if not self._struct_enabled[sdef["key"]].get():
+                continue
+            res = engine.find_structures(
+                sdef["type"], self.project.mc_version, self.project.seed,
+                sdef["dim"], int(x0), int(z0), int(x1), int(z1))
+            if res == engine.TOO_BROAD:
+                too_broad = True
+                continue
+            for (x, z) in (res or []):
+                markers.append({"x": x, "z": z, "color": sdef["color"],
+                                "sym": sdef["sym"], "label": sdef["label"]})
+        self.map.set_structures(markers)
+        if too_broad:
+            self._status_var.set("Zoom in to load structures (area too large).")
+        elif markers:
+            self._status_var.set(f"{len(markers)} structures in view.")
+
+    def _goto_spawn(self):
+        if not self._engine_available:
+            return
+        pos = engine.get_spawn(self.project.mc_version, self.project.seed)
+        if pos:
+            self.map.center_on(pos[0], pos[1])
+            self._status_var.set(f"Spawn at ({pos[0]}, {pos[1]})")
 
     # ------------------------------------------------------------------ #
     # Map callbacks
     # ------------------------------------------------------------------ #
     def _on_map_coords(self, x, z):
         self._coord_var.set(f"X: {int(round(x))}, Z: {int(round(z))}")
+
+    def _on_hover(self, text):
+        if text:
+            self._status_var.set(text)
 
     def _on_map_place(self, x, z):
         wp = Waypoint(name="Waypoint", x=x, z=z)
@@ -319,7 +387,6 @@ class App(tk.Tk):
             self._mark_dirty()
             self._refresh_all()
             self.map.set_selected(dlg.result.id)
-        # Leave add mode after one placement.
         self._add_var.set(False)
         self._toggle_add_mode()
 
@@ -333,8 +400,8 @@ class App(tk.Tk):
     # Waypoint list actions
     # ------------------------------------------------------------------ #
     def _add_waypoint_dialog(self):
-        cx, cz = self.map.center_x, self.map.center_z
-        wp = Waypoint(name="Waypoint", x=int(round(cx)), z=int(round(cz)))
+        wp = Waypoint(name="Waypoint", x=int(round(self.map.center_x)),
+                      z=int(round(self.map.center_z)))
         dlg = WaypointDialog(self, wp, "New waypoint")
         if dlg.result:
             self.project.add(dlg.result)
@@ -366,8 +433,7 @@ class App(tk.Tk):
         if not wp_id:
             return
         wp = self.project.get(wp_id)
-        if wp and messagebox.askyesno("Delete waypoint",
-                                      f"Delete '{wp.name}'?"):
+        if wp and messagebox.askyesno("Delete waypoint", f"Delete '{wp.name}'?"):
             self.project.remove(wp_id)
             self._mark_dirty()
             self._refresh_all()
@@ -409,8 +475,7 @@ class App(tk.Tk):
     def open_project(self):
         if not self._confirm_discard():
             return
-        path = filedialog.askopenfilename(title="Open map",
-                                          filetypes=MSF_FILETYPES)
+        path = filedialog.askopenfilename(title="Open map", filetypes=MSF_FILETYPES)
         if not path:
             return
         try:
@@ -418,11 +483,14 @@ class App(tk.Tk):
         except msf.MsfError as exc:
             messagebox.showerror("Cannot open file", str(exc))
             return
+        self.project.mc_version = engine.normalize_version(self.project.mc_version)
         self.current_path = Path(path)
         self.dirty = False
         self._seed_var.set(self.project.seed)
         self._version_var.set(self.project.mc_version)
         self._refresh_all()
+        if self._biome_var.get():
+            self._toggle_biomes()
         self._update_title()
         self._status_var.set(f"Opened {self.current_path.name}")
 
@@ -456,8 +524,7 @@ class App(tk.Tk):
         if not self._has_waypoints():
             return
         path = filedialog.asksaveasfilename(
-            title="Export CSV", defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
+            title="Export CSV", defaultextension=".csv", filetypes=[("CSV", "*.csv")],
             initialfile=(self.project.name or "waypoints") + ".csv")
         if not path:
             return
@@ -486,12 +553,9 @@ class App(tk.Tk):
     # Shared helpers
     # ------------------------------------------------------------------ #
     def _refresh_all(self):
-        # Rebuild the tree.
         self.tree.delete(*self.tree.get_children())
         for w in self.project.waypoints:
-            y = "" if w.y is None else w.y
-            self.tree.insert("", "end", iid=w.id,
-                             values=(w.name, w.x, w.z, w.dimension))
+            self.tree.insert("", "end", iid=w.id, values=(w.name, w.x, w.z, w.dimension))
         self.map.set_waypoints(self.project.waypoints)
 
     def _mark_dirty(self):
@@ -500,15 +564,13 @@ class App(tk.Tk):
 
     def _update_title(self):
         name = self.current_path.name if self.current_path else "Untitled"
-        star = "*" if self.dirty else ""
-        self.title(f"{star}{name} - {__app_name__}")
+        self.title(f"{'*' if self.dirty else ''}{name} - {__app_name__}")
 
     def _confirm_discard(self):
         if not self.dirty:
             return True
         answer = messagebox.askyesnocancel(
-            "Unsaved changes",
-            "You have unsaved changes. Save before continuing?")
+            "Unsaved changes", "You have unsaved changes. Save before continuing?")
         if answer is None:
             return False
         if answer:
@@ -520,15 +582,15 @@ class App(tk.Tk):
             self.destroy()
 
     def _about(self):
-        backend = biomes.BACKEND_NAME or "none (grid + waypoints only)"
+        newest = "up to 1.21" if self._engine_available else "unavailable"
         messagebox.showinfo(
             "About " + __app_name__,
             f"{__app_name__} v{__version__}\n\n"
-            "A Minecraft seed map with custom waypoints.\n"
-            f"Biome backend: {backend}\n\n"
+            "A Minecraft seed map with custom waypoints, biome rendering,\n"
+            "and structure finding.\n\n"
+            f"World-gen engine: cubiomes ({newest})\n"
             "Files are saved as .msf; export to CSV or Markdown.")
 
 
 def run():
-    app = App()
-    app.mainloop()
+    App().mainloop()

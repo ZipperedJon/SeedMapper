@@ -1,2 +1,4 @@
 Pillow>=10.0
-cubiomespi>=1.0
+
+# Build-only (not needed at runtime): ziglang compiles native/ into
+# seedmapper/lib/cubiomes.dll.  Install with:  pip install ziglang

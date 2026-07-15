@@ -3,13 +3,10 @@
 World coordinates follow Minecraft's convention: +X is east, +Z is south.
 On screen, +X goes right and +Z goes down, so the mapping is direct.
 
-An optional *biome provider* can paint a raster background behind the grid.
-The provider is any object with:
-
-    render(x0, z0, x1, z1, width, height) -> PIL.Image | None
-
-where (x0, z0) is the world coordinate at the top-left of the view and
-(x1, z1) is the bottom-right. Returning None means "nothing to draw".
+The biome layer is rendered slightly larger than the viewport and repositioned
+via the same world->screen transform on every redraw, so it pans and zooms
+together with the grid. Structure markers are drawn from world coordinates too,
+so they always stay pinned to the right spot.
 """
 
 from __future__ import annotations
@@ -21,9 +18,12 @@ from PIL import Image, ImageTk
 
 from .model import Waypoint
 
-# Zoom limits, in screen pixels per Minecraft block.
-MIN_SCALE = 0.01
+MIN_SCALE = 0.002
 MAX_SCALE = 16.0
+
+# Extra fraction of the viewport rendered around the edges so a pan reveals
+# already-drawn biome pixels instead of blank space.
+BIOME_MARGIN = 0.35
 
 BG_COLOR = "#0e1621"
 GRID_COLOR = "#22303c"
@@ -40,29 +40,29 @@ class MapCanvas(tk.Frame):
         self.canvas = tk.Canvas(self, bg=BG_COLOR, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
-        # View state: world coordinate at the centre of the viewport, and the
-        # zoom level in pixels per block.
         self.center_x: float = 0.0
         self.center_z: float = 0.0
         self.scale: float = 0.5
 
         self.waypoints: list[Waypoint] = []
+        self.structures: list[dict] = []      # dicts: x, z, color, sym, label
         self.selected_id: Optional[str] = None
         self.add_mode: bool = False
 
-        # Biome background support.
+        # Biome background state.
         self._biome_provider = None
         self._biome_enabled = False
-        self._bg_photo: Optional[ImageTk.PhotoImage] = None
-        self._bg_job: Optional[str] = None
+        self._bg = None                        # dict(pil, photo, bx0, bz0, scale)
+        self._settle_job: Optional[str] = None
 
         # Callbacks wired up by the app.
         self.on_coords: Callable[[float, float], None] = lambda x, z: None
         self.on_place: Callable[[int, int], None] = lambda x, z: None
         self.on_select: Callable[[Optional[str]], None] = lambda wp_id: None
         self.on_edit: Callable[[str], None] = lambda wp_id: None
+        self.on_view_changed: Callable[[], None] = lambda: None
+        self.on_hover: Callable[[Optional[str]], None] = lambda text: None
 
-        # Drag tracking (distinguish a click from a pan).
         self._drag_start = None
         self._dragged = False
 
@@ -72,10 +72,10 @@ class MapCanvas(tk.Frame):
         c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<Double-Button-1>", self._on_double)
         c.bind("<Motion>", self._on_motion)
-        c.bind("<MouseWheel>", self._on_wheel)          # Windows / macOS
-        c.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.2))   # Linux
+        c.bind("<MouseWheel>", self._on_wheel)
+        c.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.2))
         c.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / 1.2))
-        c.bind("<Configure>", lambda e: self.redraw())
+        c.bind("<Configure>", lambda e: (self.redraw(), self._request_settle()))
 
     # ------------------------------------------------------------------ #
     # Coordinate transforms
@@ -85,21 +85,29 @@ class MapCanvas(tk.Frame):
 
     def world_to_screen(self, x: float, z: float) -> tuple[float, float]:
         w, h = self._size()
-        sx = (x - self.center_x) * self.scale + w / 2
-        sy = (z - self.center_z) * self.scale + h / 2
-        return sx, sy
+        return ((x - self.center_x) * self.scale + w / 2,
+                (z - self.center_z) * self.scale + h / 2)
 
     def screen_to_world(self, sx: float, sy: float) -> tuple[float, float]:
         w, h = self._size()
-        x = (sx - w / 2) / self.scale + self.center_x
-        z = (sy - h / 2) / self.scale + self.center_z
-        return x, z
+        return ((sx - w / 2) / self.scale + self.center_x,
+                (sy - h / 2) / self.scale + self.center_z)
+
+    def view_bounds(self):
+        w, h = self._size()
+        x0, z0 = self.screen_to_world(0, 0)
+        x1, z1 = self.screen_to_world(w, h)
+        return x0, z0, x1, z1
 
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
     def set_waypoints(self, waypoints: list[Waypoint]) -> None:
         self.waypoints = waypoints
+        self.redraw()
+
+    def set_structures(self, structures: list[dict]) -> None:
+        self.structures = structures
         self.redraw()
 
     def set_selected(self, wp_id: Optional[str]) -> None:
@@ -112,27 +120,32 @@ class MapCanvas(tk.Frame):
 
     def set_biome_provider(self, provider) -> None:
         self._biome_provider = provider
-        self._request_biome_render()
+        self._bg = None
+        self._request_settle()
 
     def set_biome_enabled(self, enabled: bool) -> None:
         self._biome_enabled = enabled
         if not enabled:
-            self._bg_photo = None
-        self._request_biome_render()
+            self._bg = None
+            self.redraw()
+        else:
+            self._request_settle()
 
     def center_on(self, x: float, z: float) -> None:
         self.center_x = float(x)
         self.center_z = float(z)
         self.redraw()
+        self._request_settle()
 
     def go_home(self) -> None:
         self.center_x = 0.0
         self.center_z = 0.0
         self.scale = 0.5
         self.redraw()
+        self._request_settle()
 
     # ------------------------------------------------------------------ #
-    # Event handlers
+    # Events
     # ------------------------------------------------------------------ #
     def _on_press(self, event):
         self._drag_start = (event.x, event.y, self.center_x, self.center_z)
@@ -142,26 +155,23 @@ class MapCanvas(tk.Frame):
         if not self._drag_start:
             return
         sx, sy, cx, cz = self._drag_start
-        dx = event.x - sx
-        dy = event.y - sy
+        dx, dy = event.x - sx, event.y - sy
         if abs(dx) > 3 or abs(dy) > 3:
             self._dragged = True
         self.center_x = cx - dx / self.scale
         self.center_z = cz - dy / self.scale
-        self.redraw(defer_biome=True)
+        self.redraw()
 
     def _on_release(self, event):
-        if self._dragged:
-            self._drag_start = None
-            self._request_biome_render()
-            return
+        was_drag = self._dragged
         self._drag_start = None
-
+        if was_drag:
+            self._request_settle()
+            return
         if self.add_mode:
             x, z = self.screen_to_world(event.x, event.y)
             self.on_place(round(x), round(z))
             return
-
         hit = self._hit_test(event.x, event.y)
         self.selected_id = hit
         self.on_select(hit)
@@ -176,123 +186,166 @@ class MapCanvas(tk.Frame):
     def _on_motion(self, event):
         x, z = self.screen_to_world(event.x, event.y)
         self.on_coords(x, z)
+        # Structure hover tooltip.
+        s = self._struct_hit_test(event.x, event.y)
+        if s:
+            self.on_hover(f"{s['label']}  ({s['x']}, {s['z']})")
+        else:
+            self.on_hover(None)
 
     def _on_wheel(self, event):
-        factor = 1.2 if event.delta > 0 else 1 / 1.2
-        self._zoom_at(event.x, event.y, factor)
+        self._zoom_at(event.x, event.y, 1.2 if event.delta > 0 else 1 / 1.2)
 
     def _zoom_at(self, sx, sy, factor):
         wx, wz = self.screen_to_world(sx, sy)
         self.scale = max(MIN_SCALE, min(MAX_SCALE, self.scale * factor))
-        # Keep the world point under the cursor fixed after zooming.
         w, h = self._size()
         self.center_x = wx - (sx - w / 2) / self.scale
         self.center_z = wz - (sy - h / 2) / self.scale
-        self.redraw(defer_biome=True)
-        self._request_biome_render()
+        self.redraw()
+        self._request_settle()
 
     def _hit_test(self, sx, sy, radius=10) -> Optional[str]:
-        best = None
-        best_d2 = radius * radius
-        for w in self.waypoints:
-            px, py = self.world_to_screen(w.x, w.z)
+        best, best_d2 = None, radius * radius
+        for wp in self.waypoints:
+            px, py = self.world_to_screen(wp.x, wp.z)
             d2 = (px - sx) ** 2 + (py - sy) ** 2
             if d2 <= best_d2:
-                best_d2 = d2
-                best = w.id
+                best_d2, best = d2, wp.id
+        return best
+
+    def _struct_hit_test(self, sx, sy, radius=9):
+        best, best_d2 = None, radius * radius
+        for s in self.structures:
+            px, py = self.world_to_screen(s["x"], s["z"])
+            d2 = (px - sx) ** 2 + (py - sy) ** 2
+            if d2 <= best_d2:
+                best_d2, best = d2, s
         return best
 
     # ------------------------------------------------------------------ #
-    # Biome background (debounced so panning stays smooth)
+    # Settle: after movement stops, re-render biomes and let app refresh
+    # structures for the new view.
     # ------------------------------------------------------------------ #
-    def _request_biome_render(self):
-        if self._bg_job is not None:
-            self.after_cancel(self._bg_job)
-        self._bg_job = self.after(120, self._render_biome_now)
+    def _request_settle(self):
+        if self._settle_job is not None:
+            self.after_cancel(self._settle_job)
+        self._settle_job = self.after(140, self._on_settle)
 
-    def _render_biome_now(self):
-        self._bg_job = None
-        if not (self._biome_enabled and self._biome_provider):
-            self._bg_photo = None
-            self.redraw(defer_biome=True)
-            return
+    def _on_settle(self):
+        self._settle_job = None
+        if self._biome_enabled and self._biome_provider:
+            self._render_biome()
+        self.on_view_changed()
+        self.redraw()
+
+    def _render_biome(self):
         w, h = self._size()
-        x0, z0 = self.screen_to_world(0, 0)
-        x1, z1 = self.screen_to_world(w, h)
+        wv, hv = w / self.scale, h / self.scale
+        ex0 = self.center_x - wv * (0.5 + BIOME_MARGIN)
+        ez0 = self.center_z - hv * (0.5 + BIOME_MARGIN)
+        ex1 = self.center_x + wv * (0.5 + BIOME_MARGIN)
+        ez1 = self.center_z + hv * (0.5 + BIOME_MARGIN)
+        pw = max(2, int(w * (1 + 2 * BIOME_MARGIN)))
+        ph = max(2, int(h * (1 + 2 * BIOME_MARGIN)))
         try:
-            img = self._biome_provider.render(x0, z0, x1, z1, w, h)
+            pil = self._biome_provider.render(ex0, ez0, ex1, ez1, pw, ph)
         except Exception:
-            img = None
-        if img is not None:
-            self._bg_photo = ImageTk.PhotoImage(img)
-        else:
-            self._bg_photo = None
-        self.redraw(defer_biome=True)
+            pil = None
+        if pil is None:
+            self._bg = None
+            return
+        self._bg = {
+            "pil": pil,
+            "photo": ImageTk.PhotoImage(pil),
+            "bx0": ex0, "bz0": ez0,
+            "scale": self.scale,
+        }
 
     # ------------------------------------------------------------------ #
     # Drawing
     # ------------------------------------------------------------------ #
-    def redraw(self, defer_biome: bool = False):
+    def redraw(self):
         c = self.canvas
         c.delete("all")
         w, h = self._size()
-
-        if self._bg_photo is not None:
-            c.create_image(0, 0, image=self._bg_photo, anchor="nw")
-
+        self._draw_biome(w, h)
         self._draw_grid(w, h)
+        self._draw_structures()
         self._draw_waypoints()
 
+    def _draw_biome(self, w, h):
+        if not (self._biome_enabled and self._bg):
+            return
+        bg = self._bg
+        sx, sy = self.world_to_screen(bg["bx0"], bg["bz0"])
+        if abs(self.scale - bg["scale"]) < 1e-9:
+            photo = bg["photo"]
+        else:
+            # Zoom changed since last render: rescale until the settle redraw.
+            factor = self.scale / bg["scale"]
+            neww = max(1, int(bg["pil"].width * factor))
+            newh = max(1, int(bg["pil"].height * factor))
+            resized = bg["pil"].resize((neww, newh), Image.NEAREST)
+            photo = ImageTk.PhotoImage(resized)
+            self._bg["_tmp_photo"] = photo  # keep a ref alive
+        self.canvas.create_image(sx, sy, image=photo, anchor="nw")
+
     def _nice_step(self) -> int:
-        """Pick a grid spacing (in blocks) that renders 40-160px apart."""
-        target_px = 90
-        raw = target_px / self.scale
-        step = 1
-        steps = [1, 2, 5]
+        raw = 90 / self.scale
         power = 1
-        while True:
-            for s in steps:
-                candidate = s * power
-                if candidate >= raw:
-                    return candidate
+        while power <= 100_000_000:
+            for s in (1, 2, 5):
+                if s * power >= raw:
+                    return s * power
             power *= 10
-            if power > 10_000_000:
-                return power
+        return power
 
     def _draw_grid(self, w, h):
         c = self.canvas
         step = self._nice_step()
-        x0, z0 = self.screen_to_world(0, 0)
-        x1, z1 = self.screen_to_world(w, h)
+        x0, z0, x1, z1 = self.view_bounds()
 
-        start_x = int(x0 // step) * step
-        gx = start_x
+        gx = int(x0 // step) * step
         while gx <= x1:
             sx, _ = self.world_to_screen(gx, 0)
             major = (gx % (step * 5) == 0)
-            c.create_line(sx, 0, sx, h,
-                          fill=GRID_MAJOR_COLOR if major else GRID_COLOR)
+            c.create_line(sx, 0, sx, h, fill=GRID_MAJOR_COLOR if major else GRID_COLOR)
             if major:
                 c.create_text(sx + 2, 2, anchor="nw", text=str(gx),
                               fill=TEXT_COLOR, font=("Segoe UI", 7))
             gx += step
 
-        start_z = int(z0 // step) * step
-        gz = start_z
+        gz = int(z0 // step) * step
         while gz <= z1:
             _, sy = self.world_to_screen(0, gz)
             major = (gz % (step * 5) == 0)
-            c.create_line(0, sy, w, sy,
-                          fill=GRID_MAJOR_COLOR if major else GRID_COLOR)
+            c.create_line(0, sy, w, sy, fill=GRID_MAJOR_COLOR if major else GRID_COLOR)
             if major:
                 c.create_text(2, sy + 2, anchor="nw", text=str(gz),
                               fill=TEXT_COLOR, font=("Segoe UI", 7))
             gz += step
 
-        # Axes through the world origin (0, 0).
         ox, oy = self.world_to_screen(0, 0)
-        c.create_line(ox, 0, ox, h, fill=AXIS_COLOR, width=1)
-        c.create_line(0, oy, w, oy, fill=AXIS_COLOR, width=1)
+        c.create_line(ox, 0, ox, h, fill=AXIS_COLOR)
+        c.create_line(0, oy, w, oy, fill=AXIS_COLOR)
+
+    def _draw_structures(self):
+        c = self.canvas
+        w, h = self._size()
+        show_label = self.scale > 0.25
+        r = 7
+        for s in self.structures:
+            sx, sy = self.world_to_screen(s["x"], s["z"])
+            if sx < -20 or sy < -20 or sx > w + 20 or sy > h + 20:
+                continue
+            c.create_rectangle(sx - r, sy - r, sx + r, sy + r,
+                               fill=s["color"], outline="#0b1119", width=1)
+            c.create_text(sx, sy, text=s["sym"], fill="#10181f",
+                          font=("Segoe UI", 8, "bold"))
+            if show_label:
+                c.create_text(sx + r + 2, sy, anchor="w", text=s["label"],
+                              fill="#cfe0ee", font=("Segoe UI", 7))
 
     def _draw_waypoints(self):
         c = self.canvas
@@ -304,9 +357,7 @@ class MapCanvas(tk.Frame):
             width = 3 if selected else 1
             c.create_oval(sx - r, sy - r, sx + r, sy + r,
                           fill=wp.color, outline=outline, width=width)
-            label = wp.name
-            c.create_text(sx + r + 3, sy, anchor="w", text=label,
+            c.create_text(sx + r + 3, sy, anchor="w", text=wp.name,
                           fill="#e8eef5", font=("Segoe UI", 8, "bold"))
-            coord = f"({wp.x}, {wp.z})"
-            c.create_text(sx + r + 3, sy + 11, anchor="w", text=coord,
+            c.create_text(sx + r + 3, sy + 11, anchor="w", text=f"({wp.x}, {wp.z})",
                           fill=TEXT_COLOR, font=("Segoe UI", 7))

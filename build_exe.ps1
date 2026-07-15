@@ -7,7 +7,7 @@ $py = Join-Path $root ".venv\Scripts\python.exe"
 Write-Host "Building SeedMapper.exe ..." -ForegroundColor Cyan
 & $py -m PyInstaller --noconfirm --onefile --windowed `
     --name SeedMapper `
-    --collect-all cubiomespi `
+    --add-data "$root\seedmapper\lib\cubiomes.dll;seedmapper/lib" `
     --distpath "$root\dist" `
     --workpath "$root\build" `
     --specpath "$root" `

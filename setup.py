@@ -17,20 +17,17 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from seedmapper import __version__  # noqa: E402
 
-# Locate the cubiomes DLL that cubiomespi loads at runtime via ctypes.
-import cubiomespi  # noqa: E402
-
-_cub_dir = os.path.dirname(cubiomespi.__file__)
-_dll_src = os.path.join(_cub_dir, "lib", "lib.dll")
+# Our compiled world-gen DLL, loaded at runtime via ctypes by engine.py.
+_dll_src = os.path.join("seedmapper", "lib", "cubiomes.dll")
 
 build_exe_options = {
-    "packages": ["seedmapper", "cubiomespi", "PIL", "tkinter"],
+    "packages": ["seedmapper", "PIL", "tkinter"],
     "excludes": ["test", "unittest", "pydoc_data"],
-    # Keep cubiomespi as loose files (not zipped) so ctypes can find its DLL,
-    # and copy the DLL into the matching lib/ subfolder.
-    "zip_exclude_packages": ["cubiomespi"],
+    # Keep seedmapper as loose files (not zipped) so engine.py's __file__ path
+    # to lib/cubiomes.dll resolves, and copy the DLL into that location.
+    "zip_exclude_packages": ["seedmapper"],
     "include_files": [
-        (_dll_src, os.path.join("lib", "cubiomespi", "lib", "lib.dll")),
+        (_dll_src, os.path.join("lib", "seedmapper", "lib", "cubiomes.dll")),
     ],
     "include_msvcr": True,
 }

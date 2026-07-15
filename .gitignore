@@ -11,6 +11,12 @@ build/
 dist/
 *.spec.bak
 
+# Native build byproducts (keep the .dll, drop the rest)
+seedmapper/lib/*.pdb
+seedmapper/lib/*.lib
+native/**/*.o
+native/**/*.obj
+
 # Editor / OS
 .vscode/
 .idea/
