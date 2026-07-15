@@ -20,8 +20,28 @@ from typing import Optional
 # Every entry maps to the cubiomes MCVersion ordinal that models its world
 # generation. Within a major release, patches that didn't change generation
 # share an ordinal (this is how cubiomes itself treats them). Newest first.
+# Versions newer than 1.21.4 are not modeled by cubiomes yet; they map to the
+# newest generation available (1.21.4 / MC_1_21_WD). Since Minecraft world
+# generation has been stable since 1.18, this matches for biomes and almost all
+# structures. These labels are flagged approximate so the UI can say so.
+APPROX_VERSIONS = {
+    "26.2", "26.1.2", "26.1.1", "26.1",
+    "1.21.11", "1.21.10", "1.21.9", "1.21.8", "1.21.7", "1.21.6", "1.21.5",
+}
+
 VERSION_LIST: list[tuple[str, int]] = [
-    ("1.21.4 (latest)", 28),   # MC_1_21_WD - newest the engine models
+    ("26.2", 28),
+    ("26.1.2", 28),
+    ("26.1.1", 28),
+    ("26.1", 28),
+    ("1.21.11", 28),
+    ("1.21.10", 28),
+    ("1.21.9", 28),
+    ("1.21.8", 28),
+    ("1.21.7", 28),
+    ("1.21.6", 28),
+    ("1.21.5", 28),
+    ("1.21.4", 28),            # MC_1_21_WD - newest the engine actually models
     ("1.21.3", 27),
     ("1.21.2", 27),
     ("1.21.1", 26),
@@ -89,7 +109,12 @@ VERSION_LIST: list[tuple[str, int]] = [
     ("Beta 1.7", 1),
 ]
 VERSION_LABELS = [label for label, _ in VERSION_LIST]
-DEFAULT_VERSION = "1.21.4 (latest)"
+DEFAULT_VERSION = "26.2"
+
+
+def is_approximate(label: str) -> bool:
+    """True if the version is newer than the engine models (uses 1.21.4 gen)."""
+    return normalize_version(label) in APPROX_VERSIONS
 _LABEL_TO_CONST = {label: const for label, const in VERSION_LIST}
 
 DIMENSIONS = {"overworld": 0, "nether": -1, "end": 1}

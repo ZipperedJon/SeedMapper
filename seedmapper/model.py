@@ -57,7 +57,7 @@ class Project:
 
     name: str = "Untitled Map"
     seed: str = ""
-    mc_version: str = "1.21.4 (latest)"
+    mc_version: str = "26.2"
     waypoints: list = field(default_factory=list)
     # Structure ids ("<key>:<x>:<z>") the user has marked as explored.
     explored: set = field(default_factory=set)

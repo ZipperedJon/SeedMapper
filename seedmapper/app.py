@@ -157,6 +157,7 @@ class App(tk.Tk):
         # Turn the biome layer on by default when the engine is available.
         if self._engine_available and self._biome_var.get():
             self._toggle_biomes()
+        self._note_version()
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -416,6 +417,13 @@ class App(tk.Tk):
         self._mark_dirty()
         self._apply_biome_layer()
         self._refresh_structures()
+        self._note_version()
+
+    def _note_version(self):
+        if self._engine_available and engine.is_approximate(self.project.mc_version):
+            self._status_var.set(
+                f"Note: {self.project.mc_version} isn't modeled yet - showing "
+                "1.21.4 generation (biomes and almost all structures match).")
 
     def _on_view_changed(self):
         self._refresh_structures()
