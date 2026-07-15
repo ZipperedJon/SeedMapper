@@ -17,29 +17,79 @@ from typing import Optional
 # Minecraft versions (label -> cubiomes MCVersion enum ordinal).
 # Ordinals come from the vendored cubiomes biomes.h enum. Newest first.
 # --------------------------------------------------------------------------- #
+# Every entry maps to the cubiomes MCVersion ordinal that models its world
+# generation. Within a major release, patches that didn't change generation
+# share an ordinal (this is how cubiomes itself treats them). Newest first.
 VERSION_LIST: list[tuple[str, int]] = [
-    ("1.21 (latest)", 28),     # MC_1_21_WD - newest the engine models
+    ("1.21.4 (latest)", 28),   # MC_1_21_WD - newest the engine models
     ("1.21.3", 27),
+    ("1.21.2", 27),
     ("1.21.1", 26),
+    ("1.21", 26),
     ("1.20.6", 25),
+    ("1.20.5", 25),
+    ("1.20.4", 25),
+    ("1.20.2", 25),
+    ("1.20.1", 25),
+    ("1.20", 25),
     ("1.19.4", 24),
+    ("1.19.3", 24),
     ("1.19.2", 23),
+    ("1.19.1", 23),
+    ("1.19", 23),
     ("1.18.2", 22),
+    ("1.18.1", 22),
+    ("1.18", 22),
     ("1.17.1", 21),
+    ("1.17", 21),
     ("1.16.5", 20),
+    ("1.16.4", 20),
+    ("1.16.3", 20),
+    ("1.16.2", 20),
     ("1.16.1", 19),
+    ("1.16", 19),
     ("1.15.2", 18),
+    ("1.15.1", 18),
+    ("1.15", 18),
     ("1.14.4", 17),
+    ("1.14.3", 17),
+    ("1.14.2", 17),
+    ("1.14.1", 17),
+    ("1.14", 17),
     ("1.13.2", 16),
+    ("1.13.1", 16),
+    ("1.13", 16),
     ("1.12.2", 15),
+    ("1.12.1", 15),
+    ("1.12", 15),
     ("1.11.2", 14),
+    ("1.11.1", 14),
+    ("1.11", 14),
     ("1.10.2", 13),
+    ("1.10.1", 13),
+    ("1.10", 13),
     ("1.9.4", 12),
+    ("1.9.3", 12),
+    ("1.9.2", 12),
+    ("1.9.1", 12),
+    ("1.9", 12),
     ("1.8.9", 11),
+    ("1.8.8", 11),
+    ("1.8", 11),
     ("1.7.10", 10),
+    ("1.7.2", 10),
+    ("1.6.4", 9),
+    ("1.5.2", 8),
+    ("1.4.7", 7),
+    ("1.3.2", 6),
+    ("1.2.5", 5),
+    ("1.1", 4),
+    ("1.0", 3),
+    ("Beta 1.8", 2),
+    ("Beta 1.7", 1),
 ]
 VERSION_LABELS = [label for label, _ in VERSION_LIST]
-DEFAULT_VERSION = "1.21.3"
+DEFAULT_VERSION = "1.21.4 (latest)"
 _LABEL_TO_CONST = {label: const for label, const in VERSION_LIST}
 
 DIMENSIONS = {"overworld": 0, "nether": -1, "end": 1}
