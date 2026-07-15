@@ -85,6 +85,39 @@ BIOME_COLORS: dict[int, tuple[int, int, int]] = {
 
 _FALLBACK = (110, 110, 110)
 
+# Human-readable biome names (cubiomes BiomeID ordinals).
+BIOME_NAMES: dict[int, str] = {
+    -1: "—", 0: "Ocean", 1: "Plains", 2: "Desert", 3: "Windswept Hills",
+    4: "Forest", 5: "Taiga", 6: "Swamp", 7: "River", 8: "Nether Wastes",
+    9: "The End", 10: "Frozen Ocean", 11: "Frozen River", 12: "Snowy Plains",
+    13: "Snowy Mountains", 14: "Mushroom Fields", 15: "Mushroom Shore",
+    16: "Beach", 17: "Desert Hills", 18: "Wooded Hills", 19: "Taiga Hills",
+    20: "Mountain Edge", 21: "Jungle", 22: "Jungle Hills", 23: "Sparse Jungle",
+    24: "Deep Ocean", 25: "Stony Shore", 26: "Snowy Beach", 27: "Birch Forest",
+    28: "Birch Forest Hills", 29: "Dark Forest", 30: "Snowy Taiga",
+    31: "Snowy Taiga Hills", 32: "Old Growth Pine Taiga", 33: "Giant Tree Taiga Hills",
+    34: "Windswept Forest", 35: "Savanna", 36: "Savanna Plateau", 37: "Badlands",
+    38: "Wooded Badlands", 39: "Badlands Plateau", 40: "Small End Islands",
+    41: "End Midlands", 42: "End Highlands", 43: "End Barrens", 44: "Warm Ocean",
+    45: "Lukewarm Ocean", 46: "Cold Ocean", 47: "Deep Warm Ocean",
+    48: "Deep Lukewarm Ocean", 49: "Deep Cold Ocean", 50: "Deep Frozen Ocean",
+    129: "Sunflower Plains", 130: "Desert Lakes", 140: "Ice Spikes",
+    149: "Modified Jungle", 157: "Old Growth Spruce Taiga", 168: "Bamboo Jungle",
+    169: "Bamboo Jungle Hills", 170: "Soul Sand Valley", 171: "Crimson Forest",
+    172: "Warped Forest", 173: "Basalt Deltas", 174: "Dripstone Caves",
+    175: "Lush Caves", 177: "Meadow", 178: "Grove", 179: "Snowy Slopes",
+    180: "Jagged Peaks", 181: "Frozen Peaks", 182: "Stony Peaks", 183: "Deep Dark",
+    184: "Mangrove Swamp", 185: "Cherry Grove",
+}
+
+
+def biome_name(bid: int) -> str:
+    if bid in BIOME_NAMES:
+        return BIOME_NAMES[bid]
+    if bid >= 128 and (bid - 128) in BIOME_NAMES:
+        return BIOME_NAMES[bid - 128] + " (variant)"
+    return f"Biome {bid}"
+
 
 def biome_color(bid: int) -> tuple[int, int, int]:
     """Return an RGB colour for a biome id, with graceful fallbacks."""

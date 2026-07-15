@@ -32,6 +32,28 @@ EXPORT int sm_mc_newest(void)
     return MC_NEWEST;
 }
 
+/* Cached single-point biome lookup, for cheap mouse-hover queries. The
+ * generator is only re-initialised when the version/seed/dimension change. */
+static Generator g_hover;
+static int g_hover_ready = 0;
+static int g_hover_mc = -1;
+static uint64_t g_hover_seed = 0;
+static int g_hover_dim = 999;
+
+EXPORT int sm_biome_at(int mc, uint64_t seed, int dim, int x, int y, int z)
+{
+    if (!g_hover_ready || mc != g_hover_mc || seed != g_hover_seed || dim != g_hover_dim)
+    {
+        setupGenerator(&g_hover, mc, 0);
+        applySeed(&g_hover, dim, seed);
+        g_hover_mc = mc;
+        g_hover_seed = seed;
+        g_hover_dim = dim;
+        g_hover_ready = 1;
+    }
+    return getBiomeAt(&g_hover, 1, x, y, z);
+}
+
 /* Fill out[cols*rows] with biome ids. Sample point for cell (i, j) is
  * x = x0 + (i + 0.5) * stepx,  z = z0 + (j + 0.5) * stepz. */
 EXPORT int sm_fill_biomes(int mc, uint64_t seed, int dim, int y,
@@ -74,7 +96,7 @@ EXPORT int sm_find_structures(int stype, int mc, uint64_t seed, int dim,
     int r1z = ifloordiv(z1, region_blocks);
 
     long long nreg = (long long)(r1x - r0x + 1) * (long long)(r1z - r0z + 1);
-    if (nreg > 8000)
+    if (nreg > 20000)
         return -1;
 
     Generator g;

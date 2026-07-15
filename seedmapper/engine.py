@@ -113,7 +113,7 @@ STRUCTURES: list[dict] = [
     {"key": "portal",    "label": "Ruined Portal",    "type": ST.Ruined_Portal,  "dim": "overworld", "color": "#9b59b6", "sym": "R",  "on": False},
     {"key": "city",      "label": "Ancient City",     "type": ST.Ancient_City,   "dim": "overworld", "color": "#3a4a55", "sym": "A",  "on": True},
     {"key": "trail",     "label": "Trail Ruins",      "type": ST.Trail_Ruins,    "dim": "overworld", "color": "#b08b5e", "sym": "T",  "on": False},
-    {"key": "trial",     "label": "Trial Chambers",   "type": ST.Trial_Chambers, "dim": "overworld", "color": "#c79a3a", "sym": "C",  "on": True},
+    {"key": "trial",     "label": "Trial Chambers",   "type": ST.Trial_Chambers, "dim": "overworld", "color": "#c79a3a", "sym": "C",  "on": False},
 ]
 
 
@@ -201,6 +201,11 @@ def _bind(dll):
     dll.sm_get_spawn.argtypes = [
         ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_int)]
 
+    dll.sm_biome_at.restype = ctypes.c_int
+    dll.sm_biome_at.argtypes = [
+        ctypes.c_int, ctypes.c_uint64, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int]
+
 
 def available() -> bool:
     return _load() is not None
@@ -252,6 +257,17 @@ def find_structures(struct_type: int, mc_label: str, seed: str, dimension: str,
         return TOO_BROAD
     n = min(n, maxout)
     return [(out[2 * i], out[2 * i + 1]) for i in range(n)]
+
+
+def biome_at(mc_label: str, seed: str, dimension: str,
+             x: int, z: int, y: int = 63) -> Optional[int]:
+    """Return the biome id at a single block (cheap; cached generator)."""
+    dll = _load()
+    if dll is None:
+        return None
+    dim = DIMENSIONS.get(dimension, 0)
+    return dll.sm_biome_at(version_const(mc_label), parse_seed(seed),
+                           dim, int(x), int(y), int(z))
 
 
 def get_spawn(mc_label: str, seed: str) -> Optional[tuple[int, int]]:

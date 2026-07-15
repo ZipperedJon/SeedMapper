@@ -16,14 +16,15 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageTk
 
+from . import icons
 from .model import Waypoint
 
 MIN_SCALE = 0.002
 MAX_SCALE = 16.0
 
 # Extra fraction of the viewport rendered around the edges so a pan reveals
-# already-drawn biome pixels instead of blank space.
-BIOME_MARGIN = 0.35
+# already-drawn biome pixels instead of blank space. Larger = more map loaded.
+BIOME_MARGIN = 0.6
 
 BG_COLOR = "#0e1621"
 GRID_COLOR = "#22303c"
@@ -62,6 +63,11 @@ class MapCanvas(tk.Frame):
         self.on_edit: Callable[[str], None] = lambda wp_id: None
         self.on_view_changed: Callable[[], None] = lambda: None
         self.on_hover: Callable[[Optional[str]], None] = lambda text: None
+        self.on_structure_click: Callable = lambda marker, rx, ry: None
+
+        # Structure icon images (built lazily; needs a live Tk root).
+        self._icons: dict = {}
+        self._icons_grey: dict = {}
 
         self._drag_start = None
         self._dragged = False
@@ -173,8 +179,17 @@ class MapCanvas(tk.Frame):
             self.on_place(round(x), round(z))
             return
         hit = self._hit_test(event.x, event.y)
-        self.selected_id = hit
-        self.on_select(hit)
+        if hit:
+            self.selected_id = hit
+            self.on_select(hit)
+            self.redraw()
+            return
+        marker = self._struct_hit_test(event.x, event.y)
+        if marker:
+            self.on_structure_click(marker, event.x_root, event.y_root)
+            return
+        self.selected_id = None
+        self.on_select(None)
         self.redraw()
 
     def _on_double(self, event):
@@ -330,22 +345,35 @@ class MapCanvas(tk.Frame):
         c.create_line(ox, 0, ox, h, fill=AXIS_COLOR)
         c.create_line(0, oy, w, oy, fill=AXIS_COLOR)
 
+    def _ensure_icons(self):
+        if self._icons:
+            return
+        normal, grey = icons.build_icons()
+        self._icons = {k: ImageTk.PhotoImage(v) for k, v in normal.items()}
+        self._icons_grey = {k: ImageTk.PhotoImage(v) for k, v in grey.items()}
+
     def _draw_structures(self):
+        if not self.structures:
+            return
+        self._ensure_icons()
         c = self.canvas
         w, h = self._size()
-        show_label = self.scale > 0.25
-        r = 7
+        show_label = self.scale > 0.4
         for s in self.structures:
             sx, sy = self.world_to_screen(s["x"], s["z"])
             if sx < -20 or sy < -20 or sx > w + 20 or sy > h + 20:
                 continue
-            c.create_rectangle(sx - r, sy - r, sx + r, sy + r,
-                               fill=s["color"], outline="#0b1119", width=1)
-            c.create_text(sx, sy, text=s["sym"], fill="#10181f",
-                          font=("Segoe UI", 8, "bold"))
+            table = self._icons_grey if s.get("explored") else self._icons
+            img = table.get(s["key"])
+            if img is not None:
+                c.create_image(sx, sy, image=img)
+            else:
+                c.create_rectangle(sx - 7, sy - 7, sx + 7, sy + 7,
+                                   fill=s["color"], outline="#0b1119")
             if show_label:
-                c.create_text(sx + r + 2, sy, anchor="w", text=s["label"],
-                              fill="#cfe0ee", font=("Segoe UI", 7))
+                fill = "#7f909e" if s.get("explored") else "#cfe0ee"
+                c.create_text(sx + 13, sy, anchor="w", text=s["label"],
+                              fill=fill, font=("Segoe UI", 7))
 
     def _draw_waypoints(self):
         c = self.canvas

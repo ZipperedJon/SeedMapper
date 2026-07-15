@@ -6,7 +6,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from . import __app_name__, __version__, biomes, engine, exporters, msf
+from PIL import ImageTk
+
+from . import __app_name__, __version__, biomes, engine, exporters, icons, msf
+from .colors import biome_name
 from .mapcanvas import MapCanvas
 from .model import DIMENSIONS, Project, Waypoint
 
@@ -133,7 +136,7 @@ class App(tk.Tk):
         self._status_var = tk.StringVar(value="Ready")
         self._seed_var = tk.StringVar(value=self.project.seed)
         self._version_var = tk.StringVar(value=self.project.mc_version)
-        self._biome_var = tk.BooleanVar(value=False)
+        self._biome_var = tk.BooleanVar(value=True)
         self._add_var = tk.BooleanVar(value=False)
         self._structures_var = tk.BooleanVar(value=False)
         self._struct_enabled = {
@@ -148,6 +151,10 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_all()
         self._update_title()
+
+        # Turn the biome layer on by default when the engine is available.
+        if self._engine_available and self._biome_var.get():
+            self._toggle_biomes()
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -264,18 +271,23 @@ class App(tk.Tk):
         self.map.on_edit = self._on_map_edit
         self.map.on_view_changed = self._on_view_changed
         self.map.on_hover = self._on_hover
+        self.map.on_structure_click = self._on_structure_click
 
     def _build_legend(self, parent):
         lf = ttk.LabelFrame(parent, text="Structure icons", padding=(6, 4))
         lf.pack(fill="x", pady=(10, 0))
-        for s in engine.STRUCTURES:
-            row = ttk.Frame(lf)
-            row.pack(fill="x", pady=1)
-            swatch = tk.Label(row, text=s["sym"], background=s["color"],
-                              foreground="#10181f", width=2,
-                              font=("Segoe UI", 8, "bold"))
-            swatch.pack(side="left", padx=(0, 6))
-            ttk.Label(row, text=s["label"], font=("Segoe UI", 8)).pack(side="left")
+        self._legend_imgs = {}   # keep references alive
+        normal, _ = icons.build_icons()
+        grid = ttk.Frame(lf)
+        grid.pack(fill="x")
+        for i, s in enumerate(engine.STRUCTURES):
+            photo = ImageTk.PhotoImage(normal[s["key"]])
+            self._legend_imgs[s["key"]] = photo
+            row, col = divmod(i, 2)
+            cell = ttk.Frame(grid)
+            cell.grid(row=row, column=col, sticky="w", padx=2, pady=1)
+            tk.Label(cell, image=photo).pack(side="left")
+            ttk.Label(cell, text=s["label"], font=("Segoe UI", 8)).pack(side="left", padx=(3, 8))
 
     def _build_statusbar(self):
         bar = ttk.Frame(self, relief="sunken")
@@ -353,13 +365,47 @@ class App(tk.Tk):
                 too_broad = True
                 continue
             for (x, z) in (res or []):
-                markers.append({"x": x, "z": z, "color": sdef["color"],
-                                "sym": sdef["sym"], "label": sdef["label"]})
+                sid = f"{sdef['key']}:{x}:{z}"
+                markers.append({"x": x, "z": z, "key": sdef["key"],
+                                "color": sdef["color"], "label": sdef["label"],
+                                "id": sid, "explored": sid in self.project.explored})
         self.map.set_structures(markers)
         if too_broad:
             self._status_var.set("Zoom in to load structures (area too large).")
         elif markers:
             self._status_var.set(f"{len(markers)} structures in view.")
+
+    def _on_structure_click(self, marker, root_x, root_y):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label=f"{marker['label']}  ({marker['x']}, {marker['z']})",
+                         state="disabled")
+        menu.add_separator()
+        menu.add_command(label="Add as waypoint",
+                         command=lambda: self._structure_to_waypoint(marker))
+        explored = marker["id"] in self.project.explored
+        menu.add_command(
+            label="Unmark explored" if explored else "Mark as explored",
+            command=lambda: self._toggle_explored(marker))
+        menu.tk_popup(root_x, root_y)
+
+    def _structure_to_waypoint(self, marker):
+        wp = Waypoint(name=marker["label"], x=marker["x"], z=marker["z"],
+                      category="Structure", color=marker["color"])
+        dlg = WaypointDialog(self, wp, "Add structure as waypoint")
+        if dlg.result:
+            self.project.add(dlg.result)
+            self._mark_dirty()
+            self._refresh_all()
+            self.map.set_selected(dlg.result.id)
+
+    def _toggle_explored(self, marker):
+        sid = marker["id"]
+        if sid in self.project.explored:
+            self.project.explored.discard(sid)
+        else:
+            self.project.explored.add(sid)
+        self._mark_dirty()
+        self._refresh_structures()
 
     def _goto_spawn(self):
         if not self._engine_available:
@@ -373,7 +419,14 @@ class App(tk.Tk):
     # Map callbacks
     # ------------------------------------------------------------------ #
     def _on_map_coords(self, x, z):
-        self._coord_var.set(f"X: {int(round(x))}, Z: {int(round(z))}")
+        xi, zi = int(round(x)), int(round(z))
+        text = f"X: {xi}, Z: {zi}"
+        if self._engine_available:
+            bid = engine.biome_at(self.project.mc_version, self.project.seed,
+                                  "overworld", xi, zi)
+            if bid is not None:
+                text += f"   |   {biome_name(bid)}"
+        self._coord_var.set(text)
 
     def _on_hover(self, text):
         if text:
@@ -491,6 +544,7 @@ class App(tk.Tk):
         self._refresh_all()
         if self._biome_var.get():
             self._toggle_biomes()
+        self._refresh_structures()
         self._update_title()
         self._status_var.set(f"Opened {self.current_path.name}")
 

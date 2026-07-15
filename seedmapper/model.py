@@ -59,6 +59,8 @@ class Project:
     seed: str = ""
     mc_version: str = "1.21.3"
     waypoints: list = field(default_factory=list)
+    # Structure ids ("<key>:<x>:<z>") the user has marked as explored.
+    explored: set = field(default_factory=set)
 
     def add(self, wp: Waypoint) -> None:
         self.waypoints.append(wp)
@@ -78,6 +80,7 @@ class Project:
             "seed": self.seed,
             "mc_version": self.mc_version,
             "waypoints": [w.to_dict() for w in self.waypoints],
+            "explored": sorted(self.explored),
         }
 
     @classmethod
@@ -88,4 +91,5 @@ class Project:
             mc_version=str(data.get("mc_version", "1.21.3")),
         )
         proj.waypoints = [Waypoint.from_dict(w) for w in data.get("waypoints", [])]
+        proj.explored = set(data.get("explored", []))
         return proj
