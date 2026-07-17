@@ -11,8 +11,8 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import ImageTk
 
-from . import (__app_name__, __version__, biomes, colors, engine, exporters,
-               icons, msf, updater)
+from . import (__app_name__, __version__, biomes, cache, colors, engine,
+               exporters, icons, msf, updater)
 from .colors import biome_name
 from .mapcanvas import MapCanvas
 from .model import DIMENSIONS, Project, Waypoint
@@ -249,6 +249,7 @@ class App(tk.Tk):
 
         helpmenu = tk.Menu(menubar, tearoff=0)
         helpmenu.add_command(label="Check for updates...", command=self._check_updates)
+        helpmenu.add_command(label="Clear map cache", command=self._clear_cache)
         helpmenu.add_separator()
         helpmenu.add_command(label="About", command=self._about)
         menubar.add_cascade(label="Help", menu=helpmenu)
@@ -1018,8 +1019,18 @@ class App(tk.Tk):
             return self.save_project()
         return True
 
+    def _cancel_map_jobs(self):
+        for attr in ("_settle_job", "_sharpen_job"):
+            job = getattr(self.map, attr, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _on_close(self):
         if self._confirm_discard():
+            self._cancel_map_jobs()
             self.destroy()
 
     # ------------------------------------------------------------------ #
@@ -1092,8 +1103,19 @@ class App(tk.Tk):
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Could not launch installer", str(exc))
             return
+        self._cancel_map_jobs()
         self.destroy()
         os._exit(0)   # ensure the process (and its file locks) fully exits
+
+    def _clear_cache(self):
+        cache.clear()
+        self.map._bg = None
+        if self._engine_available and self._biome_var.get():
+            self.map._render_biome()
+            self.map.redraw()
+        self._status_var.set("Map cache cleared.")
+        messagebox.showinfo("Cache cleared",
+                            "The cached map tiles have been cleared.")
 
     def _about(self):
         newest = "up to 1.21" if self._engine_available else "unavailable"

@@ -43,13 +43,14 @@ class BiomeProvider:
         self.terrain = False
         self.highlight: set = set()   # biome ids to highlight (others dimmed)
 
-    def render(self, x0, z0, x1, z1, width, height):
+    def render(self, x0, z0, x1, z1, width, height, max_cols=256):
         if width < 2 or height < 2 or x1 <= x0 or z1 <= z0:
             return None
 
-        # ~1 sample per 4 screen px (upscaled), capped for a fast render.
-        cols = max(16, min(256, int(width / 4)))
-        rows = max(16, min(256, int(height / 4)))
+        # ~1 sample per 4 screen px (upscaled), capped. A smaller max_cols gives
+        # a coarse but near-instant render (used while moving).
+        cols = max(16, min(max_cols, int(width / 4)))
+        rows = max(16, min(max_cols, int(height / 4)))
         y = depth_y(self.depth)
 
         hl = tuple(sorted(self.highlight))

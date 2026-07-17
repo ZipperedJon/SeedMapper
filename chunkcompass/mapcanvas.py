@@ -57,8 +57,9 @@ class MapCanvas(tk.Frame):
         # Biome background state.
         self._biome_provider = None
         self._biome_enabled = False
-        self._bg = None                        # dict(pil, photo, bx0, bz0, scale)
+        self._bg = None                        # dict(pil, photo, bounds, scale, full)
         self._settle_job: Optional[str] = None
+        self._sharpen_job: Optional[str] = None
 
         # Callbacks wired up by the app.
         self.on_coords: Callable[[float, float], None] = lambda x, z: None
@@ -317,8 +318,14 @@ class MapCanvas(tk.Frame):
         if not (self._biome_enabled and self._biome_provider):
             self._bg = None
             return
-        if self._biome_covers_view():
-            return                             # existing render still valid
+        covers = self._biome_covers_view()
+        if covers and self._bg and self._bg.get("full"):
+            return                             # already sharp and covering
+        if not covers:
+            self._do_render(fast=True)         # instant coarse pass, no hitch
+        self._schedule_sharpen()
+
+    def _do_render(self, fast: bool):
         w, h = self._size()
         wv, hv = w / self.scale, h / self.scale
         ex0 = self.center_x - wv * (0.5 + BIOME_MARGIN)
@@ -327,8 +334,9 @@ class MapCanvas(tk.Frame):
         ez1 = self.center_z + hv * (0.5 + BIOME_MARGIN)
         pw = max(2, int(w * (1 + 2 * BIOME_MARGIN)))
         ph = max(2, int(h * (1 + 2 * BIOME_MARGIN)))
+        max_cols = 96 if fast else 256
         try:
-            pil = self._biome_provider.render(ex0, ez0, ex1, ez1, pw, ph)
+            pil = self._biome_provider.render(ex0, ez0, ex1, ez1, pw, ph, max_cols)
         except Exception:  # noqa: BLE001
             pil = None
         if pil is None:
@@ -338,8 +346,24 @@ class MapCanvas(tk.Frame):
             "pil": pil,
             "photo": ImageTk.PhotoImage(pil),
             "bx0": ex0, "bz0": ez0, "bx1": ex1, "bz1": ez1,
-            "scale": self.scale,
+            "scale": self.scale, "full": not fast,
         }
+
+    def _schedule_sharpen(self):
+        if self._sharpen_job is not None:
+            self.after_cancel(self._sharpen_job)
+        self._sharpen_job = self.after(260, self._sharpen)
+
+    def _sharpen(self):
+        # Once the view has been still for a moment, replace the coarse pass
+        # with a full-resolution render (the app was responsive meanwhile).
+        self._sharpen_job = None
+        if not (self._biome_enabled and self._biome_provider and self._bg):
+            return
+        if self._bg.get("full") or not self._biome_covers_view():
+            return
+        self._do_render(fast=False)
+        self.redraw()
 
     # ------------------------------------------------------------------ #
     # Drawing
