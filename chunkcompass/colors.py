@@ -81,6 +81,7 @@ BIOME_COLORS: dict[int, tuple[int, int, int]] = {
     183: (10, 20, 24),      # deep dark
     184: (76, 109, 58),    # mangrove swamp
     185: (246, 192, 208),  # cherry grove
+    190: (214, 196, 74),   # sulfur caves (26.2 - not modeled by the engine yet)
 }
 
 _FALLBACK = (110, 110, 110)
@@ -108,6 +109,7 @@ BIOME_NAMES: dict[int, str] = {
     175: "Lush Caves", 177: "Meadow", 178: "Grove", 179: "Snowy Slopes",
     180: "Jagged Peaks", 181: "Frozen Peaks", 182: "Stony Peaks", 183: "Deep Dark",
     184: "Mangrove Swamp", 185: "Cherry Grove",
+    190: "Sulfur Caves",   # 26.2 addition; engine can't generate it yet
 }
 
 

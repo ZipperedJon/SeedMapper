@@ -24,8 +24,9 @@ MIN_SCALE = 0.002
 MAX_SCALE = 16.0
 
 # Extra fraction of the viewport rendered around the edges so a pan reveals
-# already-drawn biome pixels instead of blank space. Larger = more map loaded.
-BIOME_MARGIN = 0.6
+# already-drawn biome pixels instead of blank space. Larger = more map loaded
+# at once and fewer regenerations while panning (smoother movement).
+BIOME_MARGIN = 1.0
 
 BG_COLOR = "#0e1621"
 GRID_COLOR = "#22303c"
@@ -68,6 +69,7 @@ class MapCanvas(tk.Frame):
         self.on_hover: Callable[[Optional[str]], None] = lambda text: None
         self.on_structure_click: Callable = lambda marker, rx, ry: None
         self.on_delete: Callable[[str], None] = lambda wp_id: None
+        self.on_context: Callable = lambda x, z, rx, ry: None
 
         # Structure icon images (built lazily; needs a live Tk root).
         self._icons: dict = {}
@@ -89,6 +91,7 @@ class MapCanvas(tk.Frame):
         c.bind("<MouseWheel>", self._on_wheel)
         c.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.2))
         c.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / 1.2))
+        c.bind("<Button-3>", self._on_right_click)
         c.bind("<Configure>", lambda e: (self.redraw(), self._request_settle()))
 
     # ------------------------------------------------------------------ #
@@ -225,6 +228,11 @@ class MapCanvas(tk.Frame):
         self.on_select(None)
         self.redraw()
 
+    def _on_right_click(self, event):
+        self._clear_callout()
+        x, z = self.screen_to_world(event.x, event.y)
+        self.on_context(round(x), round(z), event.x_root, event.y_root)
+
     def _on_double(self, event):
         hit = self._hit_test(event.x, event.y)
         if hit:
@@ -295,10 +303,22 @@ class MapCanvas(tk.Frame):
         self.on_view_changed()
         self.redraw()
 
+    def _biome_covers_view(self) -> bool:
+        """True if the current render still covers the viewport at this zoom, so
+        we can skip regenerating (just reposition) - key to smooth movement."""
+        bg = self._bg
+        if not bg or abs(self.scale - bg["scale"]) > 1e-9:
+            return False
+        x0, z0, x1, z1 = self.view_bounds()
+        return (bg["bx0"] <= x0 and bg["bz0"] <= z0
+                and bg["bx1"] >= x1 and bg["bz1"] >= z1)
+
     def _render_biome(self):
         if not (self._biome_enabled and self._biome_provider):
             self._bg = None
             return
+        if self._biome_covers_view():
+            return                             # existing render still valid
         w, h = self._size()
         wv, hv = w / self.scale, h / self.scale
         ex0 = self.center_x - wv * (0.5 + BIOME_MARGIN)
@@ -307,8 +327,6 @@ class MapCanvas(tk.Frame):
         ez1 = self.center_z + hv * (0.5 + BIOME_MARGIN)
         pw = max(2, int(w * (1 + 2 * BIOME_MARGIN)))
         ph = max(2, int(h * (1 + 2 * BIOME_MARGIN)))
-        # The cache makes revisits (waypoints, back-and-forth) near-instant; a
-        # first-time area costs one quick generation.
         try:
             pil = self._biome_provider.render(ex0, ez0, ex1, ez1, pw, ph)
         except Exception:  # noqa: BLE001
@@ -319,7 +337,7 @@ class MapCanvas(tk.Frame):
         self._bg = {
             "pil": pil,
             "photo": ImageTk.PhotoImage(pil),
-            "bx0": ex0, "bz0": ez0,
+            "bx0": ex0, "bz0": ez0, "bx1": ex1, "bz1": ez1,
             "scale": self.scale,
         }
 

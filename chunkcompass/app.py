@@ -26,12 +26,13 @@ DIMENSION_KEY = {"Overworld": "overworld", "Nether": "nether", "End": "end"}
 class WaypointDialog(tk.Toplevel):
     """Modal dialog to create or edit a single waypoint."""
 
-    def __init__(self, master, waypoint: Waypoint, title: str):
+    def __init__(self, master, waypoint: Waypoint, title: str, categories=()):
         super().__init__(master)
         self.title(title)
         self.resizable(False, False)
         self.transient(master)
         self.withdraw()          # stay hidden until we've centred it
+        self._cat_options = sorted({c for c in categories if c})
         self.result: Waypoint | None = None
         self._wp = waypoint
 
@@ -67,8 +68,10 @@ class WaypointDialog(tk.Toplevel):
 
         row += 1
         ttk.Label(frm, text="Category").grid(row=row, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self._category, width=28).grid(
-            row=row, column=1, columnspan=3, sticky="we", **pad)
+        self._cat_combo = ttk.Combobox(frm, textvariable=self._category,
+                                       values=self._cat_options, width=26)
+        self._cat_combo.grid(row=row, column=1, columnspan=3, sticky="we", **pad)
+        self._cat_combo.bind("<KeyRelease>", self._cat_autocomplete)
 
         row += 1
         ttk.Label(frm, text="Colour").grid(row=row, column=0, sticky="w", **pad)
@@ -117,6 +120,21 @@ class WaypointDialog(tk.Toplevel):
         self.deiconify()                   # now show it at the chosen spot
         self.lift()
 
+    def _cat_autocomplete(self, event):
+        if event.keysym in ("BackSpace", "Delete", "Left", "Right", "Up", "Down",
+                            "Return", "Escape", "Tab"):
+            return
+        typed = self._category.get()
+        if not typed:
+            return
+        for opt in self._cat_options:
+            if opt.lower().startswith(typed.lower()) and len(opt) > len(typed):
+                self._cat_combo.delete(0, "end")
+                self._cat_combo.insert(0, opt)
+                self._cat_combo.selection_range(len(typed), "end")
+                self._cat_combo.icursor(len(typed))
+                break
+
     def _pick_color(self):
         _, hexval = colorchooser.askcolor(color=self._color.get(), parent=self)
         if hexval:
@@ -155,7 +173,7 @@ class WaypointDialog(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("1240x880")
+        self.geometry("1240x900")
         self.minsize(900, 620)
 
         self.project = Project()
@@ -177,6 +195,11 @@ class App(tk.Tk):
         self._dimension_var = tk.StringVar(value="Overworld")
         self._highlight_ids: set = set()
         self._search_hint = tk.StringVar(value="")
+        self._struct_query = None            # cached structure-query coverage
+        self._wp_search_var = tk.StringVar()
+        self._wp_cat_var = tk.StringVar(value="All categories")
+        self._struct_filter_var = tk.StringVar()
+        self._biome_filter_var = tk.StringVar()
 
         self._build_menu()
         self._build_toolbar()
@@ -303,8 +326,19 @@ class App(tk.Tk):
         paned.add(left, weight=0)
 
         ttk.Label(left, text="Waypoints", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        filt = ttk.Frame(left)
+        filt.pack(fill="x", pady=(2, 2))
+        ttk.Label(filt, text="Find:").pack(side="left")
+        wpe = ttk.Entry(filt, textvariable=self._wp_search_var, width=10)
+        wpe.pack(side="left", padx=(2, 4))
+        wpe.bind("<KeyRelease>", lambda e: self._refresh_all())
+        self._wp_cat_combo = ttk.Combobox(filt, textvariable=self._wp_cat_var,
+                                          width=12, state="readonly")
+        self._wp_cat_combo.pack(side="left")
+        self._wp_cat_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_all())
+
         cols = ("name", "x", "z", "dim")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=7,
+        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=6,
                                  selectmode="browse")
         for c, t, w, anc in (("name", "Name", 130, "w"), ("x", "X", 54, "e"),
                              ("z", "Z", 54, "e"), ("dim", "Dim", 66, "w")):
@@ -334,6 +368,7 @@ class App(tk.Tk):
         self.map.on_hover = self._on_hover
         self.map.on_structure_click = self._on_structure_click
         self.map.on_delete = self._delete_by_id
+        self.map.on_context = self._on_map_context
         self.map.set_dimension(self._dim())
 
     def _build_legend(self, parent):
@@ -348,11 +383,12 @@ class App(tk.Tk):
                    command=lambda: self._set_all_structures(True)).pack(side="right", padx=1)
         ttk.Button(top, text="None", width=5,
                    command=lambda: self._set_all_structures(False)).pack(side="right", padx=1)
-        ttk.Label(lf, text="Click an icon to toggle it",
-                  font=("Segoe UI", 7), foreground="#7f909e").pack(anchor="w")
+        fe = ttk.Entry(lf, textvariable=self._struct_filter_var)
+        fe.pack(fill="x", pady=(0, 3))
+        fe.bind("<KeyRelease>", lambda e: self._populate_structures())
 
         # Build icon images once (all structures); lay out only the ones for
-        # the current dimension.
+        # the current dimension (and matching the filter).
         self._icon_on = {}      # key -> PhotoImage (enabled)
         self._icon_off = {}     # key -> PhotoImage (disabled/red strike)
         self._struct_cells = {}  # key -> (label_widget, text_widget)
@@ -369,16 +405,18 @@ class App(tk.Tk):
             child.destroy()
         self._struct_cells = {}
         dim = self._dim()
-        items = [s for s in engine.STRUCTURES if s["dim"] == dim]
+        flt = self._struct_filter_var.get().strip().lower()
+        items = [s for s in engine.STRUCTURES
+                 if s["dim"] == dim and (not flt or flt in s["label"].lower())]
         for i, s in enumerate(items):
             key = s["key"]
-            row, col = divmod(i, 2)
+            row, col = divmod(i, 3)          # 3 columns keeps the panel short
             cell = ttk.Frame(self._struct_grid)
             cell.grid(row=row, column=col, sticky="w", padx=2, pady=1)
             iconlbl = tk.Label(cell, cursor="hand2")
             iconlbl.pack(side="left")
             txtlbl = tk.Label(cell, text=s["label"], font=("Segoe UI", 8), cursor="hand2")
-            txtlbl.pack(side="left", padx=(3, 8))
+            txtlbl.pack(side="left", padx=(2, 4))
             iconlbl.bind("<Button-1>", lambda e, k=key: self._toggle_one_structure(k))
             txtlbl.bind("<Button-1>", lambda e, k=key: self._toggle_one_structure(k))
             self._struct_cells[key] = (iconlbl, txtlbl)
@@ -392,6 +430,9 @@ class App(tk.Tk):
         ttk.Label(row, text="select to highlight", font=("Segoe UI", 7),
                   foreground="#7f909e").pack(side="left")
         ttk.Button(row, text="Clear", width=6, command=self._clear_highlight).pack(side="right")
+        bfe = ttk.Entry(lf, textvariable=self._biome_filter_var)
+        bfe.pack(fill="x", pady=(2, 0))
+        bfe.bind("<KeyRelease>", lambda e: self._populate_biome_list())
         box = ttk.Frame(lf)
         box.pack(fill="both", expand=True, pady=(3, 0))
         sb = ttk.Scrollbar(box, orient="vertical")
@@ -408,7 +449,10 @@ class App(tk.Tk):
     def _populate_biome_list(self):
         self._biome_list.delete(0, "end")
         self._biome_choice_ids = []
+        flt = self._biome_filter_var.get().strip().lower()
         for name, bid in colors.biome_choices(self._dim()):
+            if flt and flt not in name.lower():
+                continue
             self._biome_list.insert("end", name)
             self._biome_choice_ids.append(bid)
 
@@ -515,7 +559,7 @@ class App(tk.Tk):
         self._update_struct_cell(key)
         if not self._structures_var.get():
             self._structures_var.set(True)
-        self._refresh_structures()
+        self._refresh_structures(force=True)
 
     def _set_all_structures(self, on):
         # Only affects the structures shown for the current dimension.
@@ -523,7 +567,7 @@ class App(tk.Tk):
             if s["dim"] == self._dim():
                 self._struct_enabled[s["key"]].set(on)
                 self._update_struct_cell(s["key"])
-        self._refresh_structures()
+        self._refresh_structures(force=True)
 
     def _build_statusbar(self):
         bar = ttk.Frame(self, relief="sunken")
@@ -568,7 +612,7 @@ class App(tk.Tk):
         self._populate_biome_list()          # dimension-specific biomes
         self._highlight_ids = set()          # highlight ids don't carry across dims
         self._apply_biome_layer()
-        self._refresh_structures()
+        self._refresh_structures(force=True)
         self._status_var.set(f"Dimension: {self._dimension_var.get()}")
 
     def _apply_biome_layer(self):
@@ -599,7 +643,7 @@ class App(tk.Tk):
         if not self._engine_available:
             self._structures_var.set(False)
             return
-        self._refresh_structures()
+        self._refresh_structures(force=True)
 
     def _toggle_add_mode(self):
         self.map.set_add_mode(self._add_var.get())
@@ -617,7 +661,7 @@ class App(tk.Tk):
         self.project.mc_version = version
         self._mark_dirty()
         self._apply_biome_layer()
-        self._refresh_structures()
+        self._refresh_structures(force=True)
         self._note_version()
 
     def _note_version(self):
@@ -629,16 +673,29 @@ class App(tk.Tk):
     def _on_view_changed(self):
         self._refresh_structures()
 
-    def _refresh_structures(self):
+    def _refresh_structures(self, force=False):
         if not (self._engine_available and self._structures_var.get()):
             self.map.set_structures([])
+            self._struct_query = None
             return
         dim = self._dim()
-        x0, z0, x1, z1 = [int(v) for v in self.map.view_bounds()]
+        vx0, vz0, vx1, vz1 = [int(v) for v in self.map.view_bounds()]
+        enabled = frozenset(k for k, v in self._struct_enabled.items() if v.get())
+        # Skip re-querying while the view stays inside the already-queried area
+        # and nothing relevant changed (keeps movement smooth).
+        q = self._struct_query
+        if (not force and q and q["dim"] == dim and q["seed"] == self.project.seed
+                and q["mc"] == self.project.mc_version and q["enabled"] == enabled
+                and q["x0"] <= vx0 and q["z0"] <= vz0
+                and q["x1"] >= vx1 and q["z1"] >= vz1):
+            return
+        # Query over an area larger than the viewport so nearby pans are covered.
+        padx, padz = (vx1 - vx0) // 2, (vz1 - vz0) // 2
+        x0, z0, x1, z1 = vx0 - padx, vz0 - padz, vx1 + padx, vz1 + padz
         mc, seed = self.project.mc_version, self.project.seed
         markers, too_broad = [], False
         for sdef in engine.STRUCTURES:
-            if sdef["dim"] != dim or not self._struct_enabled[sdef["key"]].get():
+            if sdef["dim"] != dim or sdef["key"] not in enabled:
                 continue
             finder = sdef.get("finder", "region")
             if finder == "stronghold":
@@ -658,9 +715,13 @@ class App(tk.Tk):
                                 "id": sid, "explored": sid in self.project.explored})
         self.map.set_structures(markers)
         if too_broad:
+            self._struct_query = None          # couldn't cover; retry next time
             self._status_var.set("Zoom in to load structures (area too large).")
-        elif markers:
-            self._status_var.set(f"{len(markers)} structures in view ({dim}).")
+        else:
+            self._struct_query = {"x0": x0, "z0": z0, "x1": x1, "z1": z1,
+                                  "dim": dim, "seed": seed, "mc": mc, "enabled": enabled}
+            if markers:
+                self._status_var.set(f"{len(markers)} structures in view ({dim}).")
 
     def _on_structure_click(self, marker, root_x, root_y):
         menu = tk.Menu(self, tearoff=0)
@@ -678,7 +739,7 @@ class App(tk.Tk):
     def _structure_to_waypoint(self, marker):
         wp = Waypoint(name=marker["label"], x=marker["x"], z=marker["z"],
                       category="Structure", color=marker["color"])
-        dlg = WaypointDialog(self, wp, "Add structure as waypoint")
+        dlg = WaypointDialog(self, wp, "Add structure as waypoint", self._categories())
         if dlg.result:
             self.project.add(dlg.result)
             self._mark_dirty()
@@ -719,9 +780,12 @@ class App(tk.Tk):
         if text:
             self._status_var.set(text)
 
+    def _categories(self):
+        return sorted({w.category for w in self.project.waypoints if w.category})
+
     def _on_map_place(self, x, z):
         wp = Waypoint(name="Waypoint", x=x, z=z, dimension=self._dim())
-        dlg = WaypointDialog(self, wp, "New waypoint")
+        dlg = WaypointDialog(self, wp, "New waypoint", self._categories())
         if dlg.result:
             self.project.add(dlg.result)
             self._mark_dirty()
@@ -729,6 +793,21 @@ class App(tk.Tk):
             self.map.set_selected(dlg.result.id)
         self._add_var.set(False)
         self._toggle_add_mode()
+
+    def _on_map_context(self, x, z, root_x, root_y):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label=f"Create waypoint here  ({x}, {z})",
+                         command=lambda: self._create_waypoint_at(x, z))
+        menu.tk_popup(root_x, root_y)
+
+    def _create_waypoint_at(self, x, z):
+        wp = Waypoint(name="Waypoint", x=x, z=z, dimension=self._dim())
+        dlg = WaypointDialog(self, wp, "New waypoint", self._categories())
+        if dlg.result:
+            self.project.add(dlg.result)
+            self._mark_dirty()
+            self._refresh_all()
+            self.map.set_selected(dlg.result.id)
 
     def _on_map_select(self, wp_id):
         self._select_in_tree(wp_id)
@@ -742,7 +821,7 @@ class App(tk.Tk):
     def _add_waypoint_dialog(self):
         wp = Waypoint(name="Waypoint", x=int(round(self.map.center_x)),
                       z=int(round(self.map.center_z)), dimension=self._dim())
-        dlg = WaypointDialog(self, wp, "New waypoint")
+        dlg = WaypointDialog(self, wp, "New waypoint", self._categories())
         if dlg.result:
             self.project.add(dlg.result)
             self._mark_dirty()
@@ -762,7 +841,7 @@ class App(tk.Tk):
         wp = self.project.get(wp_id)
         if not wp:
             return
-        dlg = WaypointDialog(self, wp, "Edit waypoint")
+        dlg = WaypointDialog(self, wp, "Edit waypoint", self._categories())
         if dlg.result:
             self._mark_dirty()
             self._refresh_all()
@@ -840,7 +919,7 @@ class App(tk.Tk):
         self._refresh_all()
         if self._biome_var.get():
             self._toggle_biomes()
-        self._refresh_structures()
+        self._refresh_structures(force=True)
         self._update_title()
         self._status_var.set(f"Opened {self.current_path.name}")
 
@@ -903,8 +982,20 @@ class App(tk.Tk):
     # Shared helpers
     # ------------------------------------------------------------------ #
     def _refresh_all(self):
+        # Keep the category filter dropdown in sync with existing categories.
+        cats = ["All categories"] + self._categories()
+        self._wp_cat_combo.config(values=cats)
+        if self._wp_cat_var.get() not in cats:
+            self._wp_cat_var.set("All categories")
+        query = self._wp_search_var.get().strip().lower()
+        catf = self._wp_cat_var.get()
+
         self.tree.delete(*self.tree.get_children())
         for w in self.project.waypoints:
+            if query and query not in w.name.lower():
+                continue
+            if catf != "All categories" and w.category != catf:
+                continue
             self.tree.insert("", "end", iid=w.id, values=(w.name, w.x, w.z, w.dimension))
         self.map.set_waypoints(self.project.waypoints)
 
