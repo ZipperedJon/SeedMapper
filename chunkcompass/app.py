@@ -30,10 +30,11 @@ class WaypointDialog(tk.Toplevel):
         self.title(title)
         self.resizable(False, False)
         self.transient(master)
+        self.withdraw()          # stay hidden until we've centred it
         self.result: Waypoint | None = None
         self._wp = waypoint
 
-        self._name = tk.StringVar(value=waypoint.name)
+        self._name_var = tk.StringVar(value=waypoint.name)
         self._x = tk.StringVar(value=str(waypoint.x))
         self._z = tk.StringVar(value=str(waypoint.z))
         self._y = tk.StringVar(value="" if waypoint.y is None else str(waypoint.y))
@@ -47,8 +48,8 @@ class WaypointDialog(tk.Toplevel):
 
         row = 0
         ttk.Label(frm, text="Name").grid(row=row, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self._name, width=28).grid(
-            row=row, column=1, columnspan=3, sticky="we", **pad)
+        self._name_entry = ttk.Entry(frm, textvariable=self._name_var, width=28)
+        self._name_entry.grid(row=row, column=1, columnspan=3, sticky="we", **pad)
 
         row += 1
         ttk.Label(frm, text="X").grid(row=row, column=0, sticky="w", **pad)
@@ -89,8 +90,31 @@ class WaypointDialog(tk.Toplevel):
 
         self.bind("<Return>", lambda e: self._ok())
         self.bind("<Escape>", lambda e: self._cancel())
+
+        self._center_on_parent(master)
         self.grab_set()
+        self._name_entry.focus_set()
+        self._name_entry.selection_range(0, "end")
         self.wait_window(self)
+
+    def _center_on_parent(self, master):
+        """Place the dialog in the middle of the main window so it's seen at once."""
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        try:
+            px, py = master.winfo_rootx(), master.winfo_rooty()
+            pw, ph = master.winfo_width(), master.winfo_height()
+        except tk.TclError:
+            pw = ph = 0
+        if pw > 1 and ph > 1:
+            x = px + (pw - w) // 2
+            y = py + (ph - h) // 3        # a touch above centre reads better
+        else:                              # fallback: centre on screen
+            x = (self.winfo_screenwidth() - w) // 2
+            y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+        self.deiconify()                   # now show it at the chosen spot
+        self.lift()
 
     def _pick_color(self):
         _, hexval = colorchooser.askcolor(color=self._color.get(), parent=self)
@@ -113,7 +137,7 @@ class WaypointDialog(tk.Toplevel):
             messagebox.showerror("Invalid Y", "Y must be a whole number or blank.", parent=self)
             return
 
-        self._wp.name = self._name.get().strip() or "Waypoint"
+        self._wp.name = self._name_var.get().strip() or "Waypoint"
         self._wp.x, self._wp.z, self._wp.y = x, z, y
         self._wp.dimension = self._dimension.get()
         self._wp.category = self._category.get().strip()
